@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>马丁策略 模拟器（Micro/Standard账户，任意杠杆）</title>
+  <style>
+    body { font-family: Arial; margin: 30px; }
+    label, input, select { margin-top: 8px; display: inline-block; }
+    table { border-collapse: collapse; margin-top: 16px; }
+    th, td { border: 1px solid #888; padding: 5px 8px; text-align: right; }
+    th { background: #ececec; }
+    input[type="number"] { width: 90px; }
+    .buy { background: #e8f9e8; }
+    .sell { background: #fbeaea; }
+    .summary { margin-top: 18px; font-weight: bold; color: #206b2e; }
+  </style>
+</head>
+<body>
+<h2>马丁策略 模拟器（Micro/Standard账户，任意杠杆）</h2>
+<form id="simform" onsubmit="simulate(); return false;">
+  <label>账户类型:
+    <select id="accType">
+      <option value="micro">Micro</option>
+      <option value="standard">Standard</option>      
+    </select>
+  </label>
+  <label>杠杆:
+    <select id="leverage">
+      <option value="1">1:1</option>
+      <option value="50">1:50</option>
+      <option value="100">1:100</option>
+      <option value="500">1:500</option>
+      <option value="1000" selected>1:1000</option>
+    </select>
+  </label>
+  <label>黄金价格: <input type="number" step="0.01" id="giaVang" value="3300.00"></label>
+  <label>本金: <input type="number" step="0.01" id="von" value="100"></label>
+  <label>初始手数: <input type="number" step="0.01" id="lot0" value="0.1"></label>
+  <label>订单间隔 (点): <input type="number" id="kcach" value="250"></label>
+  <label>倍投: <input type="number" step="0.01" id="heso" value="1.3"></label>
+  <label>止盈 (点): <input type="number" id="tp" value="99"></label>
+  <label>模拟方向: 
+    <select id="side">
+      <option value="both">Buy & Sell</option>
+      <option value="buy">Buy</option>
+      <option value="sell">Sell</option>      
+    </select>
+  </label>
+  <button type="submit">开始模拟</button>
+</form>
+
+<div id="summary" class="summary"></div>
+<div id="result"></div>
+
+<script>
+function round(val, d=2) { return Math.round(val * Math.pow(10,d))/Math.pow(10,d); }
+
+function simulate() {
+  let accType = document.getElementById('accType').value;
+  let leverage = parseInt(document.getElementById('leverage').value);
+  let giaVang = parseFloat(document.getElementById('giaVang').value);
+  let von0 = parseFloat(document.getElementById('von').value);
+  let lot0 = parseFloat(document.getElementById('lot0').value);
+  let kcach = parseInt(document.getElementById('kcach').value);
+  let heso = parseFloat(document.getElementById('heso').value);
+  let tp_pip = parseInt(document.getElementById('tp').value);
+  let side = document.getElementById('side').value;
+
+  // Auto margin & pip value
+  let margin_per_lot, pip_value_per_lot;
+  if(accType === 'standard') {
+    pip_value_per_lot = 1;
+    margin_per_lot = 333 * (1000 / leverage);
+  } else { // micro
+    pip_value_per_lot = 0.01;
+    margin_per_lot = 3.33 * (1000 / leverage);
+  }
+
+  let html = '', detailBuy = '', detailSell = '';
+  function simulate_side(_side) {
+    let gia = giaVang, lot = lot0, sumlot = 0;
+    let arr=[], giaTB=0, total_margin=0;
+    let i=0;
+    while (true) {
+      let entry = {};
+      entry.stt = i+1;
+      entry.lot = round(lot, 2);
+      entry.gia = round(gia, 2);
+      arr.push(entry);
+      if (i === 0) giaTB = gia;
+      else giaTB = (giaTB * sumlot + gia * lot) / (sumlot + lot);
+      sumlot += lot;
+      entry.giaTB = round(giaTB, 2);
+      let bad_price = (_side === 'buy')
+        ? giaVang - kcach * 0.01 * i
+        : giaVang + kcach * 0.01 * i;
+      let floating_loss = 0;
+      for (let j = 0; j <= i; j++) {
+        let l = arr[j].lot;
+        let price_open = arr[j].gia;
+        let pip_move = (_side === 'buy')
+          ? (bad_price - price_open) / 0.01
+          : (price_open - bad_price) / 0.01;
+        floating_loss += l * pip_move * pip_value_per_lot;
+      }
+      entry.drawdown = round(floating_loss, 2);
+      total_margin = sumlot * margin_per_lot;
+      let equity = von0 - Math.abs(floating_loss);
+      let total_cost = 0, total_lots = 0;
+      for (let j = 0; j <= i; j++) { total_cost += arr[j].gia * arr[j].lot; total_lots += arr[j].lot; }
+      let avg = total_lots > 0 ? total_cost / total_lots : 0;
+      entry.avg = round(avg, 2);
+      if (total_lots > 0) {
+        if (_side === 'buy') entry.giaTP = round(avg + tp_pip * 0.01, 2);
+        else entry.giaTP = round(avg - tp_pip * 0.01, 2);
+      } else {
+        entry.giaTP = '';
+      }
+      // Dừng khi equity <= 0 hoặc margin lớn hơn vốn
+      if (equity <= 0 || total_margin > von0) break;
+      if (_side === 'buy') gia -= kcach * 0.01;
+      else gia += kcach * 0.01;
+      lot = round(lot * heso, 2);
+      i++;
+      if (i > 100) break;
+    }
+    let max_pip = (arr.length - 1) * kcach;
+    return { arr, max_pip };
+  }
+
+  if(side==='buy' || side==='both') {
+    let buy = simulate_side('buy');
+    detailBuy = `<b>BUY: 承受 ${buy.max_pip} pip</b><br>`;
+    detailBuy += `<table><tr><th>开单笔数</th><th>手数</th><th>多单价格</th><th>平均价</th><th>止盈</th><th>损失金额</th></tr>`;
+    buy.arr.forEach(e=>{
+      detailBuy += `<tr class="buy"><td>${e.stt}</td><td>${e.lot}</td><td>${e.gia}</td><td>${e.giaTB}</td><td>${e.giaTP}</td><td>${e.drawdown.toLocaleString()}</td></tr>`;
+    });
+    detailBuy += `</table>`;
+  }
+  if(side==='sell' || side==='both') {
+    let sell = simulate_side('sell');
+    detailSell = `<b>SELL: 承受 ${sell.max_pip} pip</b><br>`;
+    detailSell += `<table><tr><th>开单笔数</th><th>手数</th><th>空单价格</th><th>平均价</th><th>止盈</th><th>损失金额</th></tr>`;
+    sell.arr.forEach(e=>{
+      detailSell += `<tr class="sell"><td>${e.stt}</td><td>${e.lot}</td><td>${e.gia}</td><td>${e.giaTB}</td><td>${e.giaTP}</td><td>${e.drawdown.toLocaleString()}</td></tr>`;
+    });
+    detailSell += `</table>`;
+  }
+  document.getElementById('result').innerHTML = detailBuy + '<br>' + detailSell;
+  document.getElementById('summary').innerHTML = '';
+}
+</script>
+</body>
+</html>
